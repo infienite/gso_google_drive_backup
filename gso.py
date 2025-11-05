@@ -16,7 +16,7 @@ To run this script:
 3. Run the script (there will be prompt to confirm folder path to your gallery)
 
 
-Author: infienite (https://github.com/infienite)
+Author: infienite (https://github.com/infienite/gso_google_drive_backup)
 License: MIT
 """
 import os
@@ -25,6 +25,8 @@ from pathlib import Path
 from datetime import datetime
 
 SUBFOLDER_MAX_SIZE_GB = 15  # Specify the default max size for each subfolders
+GSO_FOLDER = "/storage/0/emulated/GSO Backups"  # Storing all subfolders
+LOG_FILE = "./last_operation.log"  # Store operation infor
 
 
 def get_filesize(file):
@@ -41,15 +43,15 @@ def get_mtime(file):
     return datetime.fromtimestamp(os.stat(file).st_mtime)
 
 
-def move_file(file, subfolder):
+def copy_file(file, subfolder):
     """
-    Move file into subfolder within the same parent folder. Returns path to the moved file.
+    Copy file into subfolder
     """
     source = Path(file)
-    target = Path(source.parent, subfolder)
-    target.mkdir(exist_ok=True)
+    target = Path(subfolder)
+    os.makedirs(target, exist_ok=True)
     target = Path(target, source.name)
-    shutil.move(str(source), str(target))
+    shutil.copy(str(source), str(target))
 
 
 def format_date(date: datetime):
@@ -59,10 +61,11 @@ def format_date(date: datetime):
     return date.strftime("%d.%m.%Y")
 
 
-def split_gallery(files):
+def files_to_gallery_files(files):
     """
-    Split the gallery files into subfolders each containing about 15GB data in order of file modification date ascending. Each folder will be named after the date of the first and the last file which fit the constraint of having <= 15GB per folder.
+    Retrieve metadata from files to make it gallery files
     """
+
     # Add metadata to file
     gallery_files = []
     for file in files:
@@ -73,6 +76,22 @@ def split_gallery(files):
         }
         gallery_files.append(_file)
     
+    with open(LOG_FILE, "w") as file:
+        line = file.readline()
+        if line != "":
+            last_dt = datetime.fromtimestamp(float(line))
+            print(f"Previous backup stores files until {format_date(last_dt)}.")
+            confirm = ui_confirm_yn("Do you want to backup files after this timestamp?")
+            if confirm:
+                gallery_files = list(map(gallery_files, lambda file: file["date"] > last_dt))
+            
+    return gallery_files
+
+
+def split_gallery(gallery_files: list[dict]):
+    """
+    Split the gallery files into subfolders each containing about 15GB data in order of file modification date ascending. Each folder will be named after the date of the first and the last file which fit the constraint of having <= 15GB per folder.
+    """
     # Sort based on modified date
     gallery_files.sort(key=lambda f: f["date"])
 
@@ -92,30 +111,32 @@ def split_gallery(files):
     # Analyze file operations
     subfolders_created = []
     subfolders_size = []
-    files_moved, files_unchanged = 0, 0
+    files_copied = 0
 
-    # Perform operations to refactor files
+    # Perform operations to copy files
     for subfolder in subfolders:
         if type(subfolder) == type(1):
             break
         i, j = subfolder
-        subfolder_name = f"{format_date(gallery_files[i]['date'])}-{format_date(gallery_files[j]['date'])}"
+        subfolder_name = f"{GSO_FOLDER}/{format_date(gallery_files[i]['date'])}-{format_date(gallery_files[j]['date'])}"
         total_size = 0
         for k in range(i, j+1):
-            move_file(gallery_files[k]["file"], subfolder_name)
+            copy_file(gallery_files[k]["file"], subfolder_name)
             total_size += gallery_files[k]["size"]
-            files_moved += 1
+            files_copied += 1
         subfolders_size.append(total_size)
         subfolders_created.append(subfolder_name)
-
-    files_unchanged = len(gallery_files) - files_moved
+    
+    # Log last file date operated on
+    if len(gallery_files) != 0:
+        with open(LOG_FILE, "w") as file:
+            file.write(gallery_files[-1]["date"].timestamp())
     
     # Return statistics as result of this operation
     return {
         "subfolders_created": subfolders_created,
         "subfolders_size": subfolders_size,
-        "files_moved": files_moved,
-        "files_unchanged": files_unchanged
+        "files_copied": files_copied,
     }
 
 
@@ -139,6 +160,41 @@ def get_gallery_folder():
             return path
         except FileNotFoundError:
             continue
+
+
+def get_additional_folders():
+    """
+    Return the path to other common folders containing images and videos. Other common folders include WhatsApp Images, Telegram and Screenshots.
+    """
+    whatsapp = [
+        "/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images",
+        "/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/Sent",
+        "/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/Private"
+    ]
+
+    telegram = [
+        "/storage/emulated/0/Pictures/Telegram"
+    ]
+
+    screenshot = [
+        "/storage/emulated/0/DCIM/Screenshots"
+    ]
+
+    other_common_folders = whatsapp + telegram + screenshot
+    error_index = []
+
+    for i in range(len(other_common_folders)):
+        try:
+            path = other_common_folders[i]
+            os.listdir(Path(path))
+        except FileNotFoundError:
+            error_index.append(i)   
+            continue
+    
+    for i in error_index:
+        other_common_folders.pop(i)
+
+    return other_common_folders
 
 
 def get_files(folder):
@@ -181,6 +237,7 @@ def main():
     """
     App controller bridging between user interface and backend execution
     """
+
     # Get path to the gallery folder
     folder = get_gallery_folder()
 
@@ -194,24 +251,37 @@ def main():
         folder = ui_input_path("Please manually enter path to the gallery folder:")
         confirm = ui_confirm_yn(f"Confirm gallery folder is at {folder}?")
 
-    # Get files in the gallery folder
-    files = get_files(folder)
+    other_folders = get_additional_folders()
 
-    # Perform split operations
-    stats = split_gallery(files)
+    print("Additional folders:")
+    for i in range(len(other_folders)):
+        print(i, other_folders[i])
+
+    # Get files in the gallery folder
+    files = get_files(folder+other_folders)
+
+    gallery_files = files_to_gallery_files(files)
+
+    total_size = 0
+    for file in gallery_files:
+        total_size += file["size"]
+    
+    print(f"This operation will take additional {"%.2f" % (total_size / 1024**3)}GB storage space.")
+    confirm = ui_confirm_yn(f"Do you wish to continue?")
+
+    # Main operation to split gallery
+    stats = split_gallery(gallery_files)
 
     print()
-    if stats["files_moved"] != 0:
-        print(f"Files moved: {stats["files_moved"]}       Files unchanged: {stats["files_unchanged"]}")
-        print(f"Subfolders created:")
-        print(f"No         Subfolder           Size ")
-        print(f"--   ---------------------   --------")
-        for i, subfolder in enumerate(zip(stats["subfolders_created"], stats["subfolders_size"])):
-            subfolder_name, size = subfolder
-            size = size / (1024**3)  # Convert from B to GB unit
-            print("%2d   %11s   %2.3fGB" % ((i+1), subfolder_name, size))
-    else:
-        print(f"No operations performed because the total size of files does not exceed {SUBFOLDER_MAX_SIZE_GB}GB")
+    print(f"Files copied: {stats["files_copied"]}")
+    print(f"Subfolders created:")
+    print(f"No         Subfolder           Size ")
+    print(f"--   ---------------------   --------")
+    for i, subfolder in enumerate(zip(stats["subfolders_created"], stats["subfolders_size"])):
+        subfolder_name, size = subfolder
+        size = size / (1024**3)  # Convert from B to GB unit
+        print("%2d   %11s   %2.3fGB" % ((i+1), subfolder_name, size))
+    print(f"All subfolders are stored at {GSO_FOLDER}")
 
 
 if __name__ == "__main__":
