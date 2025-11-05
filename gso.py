@@ -25,7 +25,7 @@ from pathlib import Path
 from datetime import datetime
 
 SUBFOLDER_MAX_SIZE_GB = 15  # Specify the default max size for each subfolders
-GSO_FOLDER = "/storage/0/emulated/GSO Backups"  # Storing all subfolders
+GSO_FOLDER = "/storage/emulated/0/GSO Backups"  # Storing all subfolders
 LOG_FILE = "./last_operation.log"  # Store operation infor
 
 
@@ -76,14 +76,16 @@ def files_to_gallery_files(files):
         }
         gallery_files.append(_file)
     
-    with open(LOG_FILE, "w") as file:
+    with open(LOG_FILE, "a+", encoding="utf-8") as file:
+        file.seek(0)
         line = file.readline()
         if line != "":
             last_dt = datetime.fromtimestamp(float(line))
             print(f"Previous backup stores files until {format_date(last_dt)}.")
             confirm = ui_confirm_yn("Do you want to backup files after this timestamp?")
             if confirm:
-                gallery_files = list(map(gallery_files, lambda file: file["date"] > last_dt))
+                gallery_files = list(filter(lambda file: file["date"] > last_dt, gallery_files))
+                
             
     return gallery_files
 
@@ -97,7 +99,7 @@ def split_gallery(gallery_files: list[dict]):
 
     # Classify files into subfolders where each subfolder contains <= 15GB total filesize
     subfolders = [0]  # Stores the start and end index of files contained in one subfolder
-    total_size, max_size = 0, SUBFOLDER_MAX_SIZE_GB*1024**3  # The size is default measured in bytes (15GB -> 1.5e+10B)
+    total_size, max_size = 0, SUBFOLDER_MAX_SIZE_GB*1000**3  # The size is default measured in bytes (15GB -> 1.5e+10B)
     i = 0
     for file in gallery_files:
         total_size += file["size"]
@@ -116,12 +118,13 @@ def split_gallery(gallery_files: list[dict]):
     # Perform operations to copy files
     for subfolder in subfolders:
         if type(subfolder) == type(1):
-            break
+            subfolder = (subfolder, len(gallery_files)-1)
         i, j = subfolder
-        subfolder_name = f"{GSO_FOLDER}/{format_date(gallery_files[i]['date'])}-{format_date(gallery_files[j]['date'])}"
+        subfolder_name = f"{format_date(gallery_files[i]['date'])}-{format_date(gallery_files[j]['date'])}"
+        subfolder_path = f"{GSO_FOLDER}/{subfolder_name}"
         total_size = 0
         for k in range(i, j+1):
-            copy_file(gallery_files[k]["file"], subfolder_name)
+            copy_file(gallery_files[k]["file"], subfolder_path)
             total_size += gallery_files[k]["size"]
             files_copied += 1
         subfolders_size.append(total_size)
@@ -129,8 +132,8 @@ def split_gallery(gallery_files: list[dict]):
     
     # Log last file date operated on
     if len(gallery_files) != 0:
-        with open(LOG_FILE, "w") as file:
-            file.write(gallery_files[-1]["date"].timestamp())
+        with open(LOG_FILE, "w+") as file:
+            file.write(str(gallery_files[-1]["date"].timestamp()))
     
     # Return statistics as result of this operation
     return {
@@ -201,8 +204,11 @@ def get_files(folder):
     """
     Get the list of files inside the specified folder. Each file is represented as a string of its absolute path. 
     """
-    filenames = os.listdir(folder)
-    files = list(map(lambda filename: Path(folder, filename), filenames))
+    files = []
+    for file in os.listdir(folder):
+    	path = os.path.join(folder, file)
+    	if os.path.isfile(path):
+    		files.append(path)
     return files
 
 
@@ -258,7 +264,9 @@ def main():
         print(i, other_folders[i])
 
     # Get files in the gallery folder
-    files = get_files(folder+other_folders)
+    files = get_files(folder)
+    for folder in other_folders:
+    	files += get_files(folder)
 
     gallery_files = files_to_gallery_files(files)
 
@@ -266,7 +274,7 @@ def main():
     for file in gallery_files:
         total_size += file["size"]
     
-    print(f"This operation will take additional {"%.2f" % (total_size / 1024**3)}GB storage space.")
+    print(f"This operation will take additional {"%.2f" % (total_size / 1000**3)}GB storage space.")
     confirm = ui_confirm_yn(f"Do you wish to continue?")
 
     # Main operation to split gallery
@@ -279,7 +287,7 @@ def main():
     print(f"--   ---------------------   --------")
     for i, subfolder in enumerate(zip(stats["subfolders_created"], stats["subfolders_size"])):
         subfolder_name, size = subfolder
-        size = size / (1024**3)  # Convert from B to GB unit
+        size = size / (1000**3)  # Convert from B to GB unit
         print("%2d   %11s   %2.3fGB" % ((i+1), subfolder_name, size))
     print(f"All subfolders are stored at {GSO_FOLDER}")
 
